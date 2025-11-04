@@ -20,6 +20,35 @@ from .exceptions import BedrockChatError, ConfigurationError
 logger = logging.getLogger(__name__)
 
 
+def _setup_logging(config: ChatConfig):
+    """Setup logging configuration based on ChatConfig"""
+    
+    # Don't reconfigure if already configured
+    if logging.getLogger().handlers:
+        return
+    
+    # Map string log levels to logging constants
+    level_map = {
+        'DEBUG': logging.DEBUG,
+        'INFO': logging.INFO,
+        'WARNING': logging.WARNING,
+        'ERROR': logging.ERROR,
+        'CRITICAL': logging.CRITICAL
+    }
+    
+    log_level = level_map.get(config.log_level.upper(), logging.INFO)
+    
+    # Configure basic logging
+    logging.basicConfig(
+        level=log_level,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
+    
+    # Set level for our specific loggers
+    logging.getLogger('auto_bedrock_chat_fastapi').setLevel(log_level)
+
+
 class BedrockChatPlugin:
     """Main plugin class for integrating Bedrock chat with FastAPI"""
     
@@ -31,6 +60,9 @@ class BedrockChatPlugin:
     ):
         self.app = app
         self.config = config or load_config(**config_overrides)
+        
+        # Setup logging configuration
+        _setup_logging(self.config)
         
         # Validate configuration
         validate_config(self.config)

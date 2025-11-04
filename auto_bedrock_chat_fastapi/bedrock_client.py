@@ -35,10 +35,21 @@ class BedrockClient:
             # Create AWS session
             self._session = boto3.Session(**self.config.get_aws_config())
             
+            # Import botocore config for timeout settings
+            from botocore.config import Config
+            
+            # Create client config with timeout
+            client_config = Config(
+                read_timeout=self.config.timeout,
+                connect_timeout=10,
+                retries={'max_attempts': 3}
+            )
+            
             # Create Bedrock client
             self._client = self._session.client(
                 'bedrock-runtime',
-                region_name=self.config.aws_region
+                region_name=self.config.aws_region,
+                config=client_config
             )
             
             logger.info(f"Bedrock client initialized for region: {self.config.aws_region}")
@@ -420,7 +431,26 @@ class BedrockClient:
     def _parse_response(self, response: Dict[str, Any], model_id: str) -> Dict[str, Any]:
         """Parse and format model response"""
         
+        # Check if response is None or invalid
+        if response is None:
+            logger.error("Received None response from Bedrock API")
+            return {
+                "content": "I received an empty response from the AI service.",
+                "tool_calls": [],
+                "metadata": {"error": "None response"}
+            }
+        
+        if not isinstance(response, dict):
+            logger.error(f"Received invalid response type: {type(response)}")
+            return {
+                "content": "I received an invalid response format from the AI service.",
+                "tool_calls": [],
+                "metadata": {"error": f"Invalid response type: {type(response)}"}
+            }
+        
         try:
+            logger.debug(f"Parsing response for model {model_id}: {response}")
+            
             if model_id.startswith("anthropic.claude") or model_id.startswith("us.anthropic.claude"):
                 return self._parse_claude_response(response)
             elif model_id.startswith("amazon.titan"):
@@ -434,6 +464,7 @@ class BedrockClient:
                 
         except Exception as e:
             logger.error(f"Failed to parse response: {str(e)}")
+            logger.error(f"Response content: {response}")
             return {
                 "content": "I encountered an error processing the response.",
                 "tool_calls": [],

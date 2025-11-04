@@ -147,6 +147,7 @@ class WebSocketChatHandler:
                 content=user_message,
                 metadata={"source": "websocket"}
             )
+            logger.debug(f"Received user message: {user_message}")
             await self.session_manager.add_message(session.session_id, user_chat_message)
             
             # Send typing indicator
@@ -171,10 +172,12 @@ class WebSocketChatHandler:
                 tools_desc=tools_desc,
                 **self.config.get_bedrock_params()
             )
+            logger.debug(f"Bedrock response: {response.get('content', '')}")
             
             # Process tool calls if any
             tool_results = []
             if response.get("tool_calls"):
+                logger.debug(f"Processing tool calls: {response['tool_calls']}")
                 tool_results = await self._execute_tool_calls(response["tool_calls"])
                 
                 # If tool calls were made, get another response with the results
@@ -198,6 +201,7 @@ class WebSocketChatHandler:
                         tools_desc=tools_desc,
                         **self.config.get_bedrock_params()
                     )
+                    logger.debug(f"Final Bedrock response after tools: {response.get('content', '')}")
             
             # Create AI response message
             ai_message = ChatMessage(

@@ -307,18 +307,26 @@ class ChatConfig(BaseSettings):
         
         tools_count = len(self.tools_desc.get("functions", [])) if self.tools_desc else 0
         
-        return f"""You are a helpful AI assistant that can interact with API endpoints.
-
-Available tools: {tools_count} API endpoints
-Model: {self.model_id}
+        if tools_count > 0:
+            return f"""You are a helpful AI assistant with access to {tools_count} tools and functions.
 
 Guidelines:
-- Be helpful and explain what you're doing when calling API endpoints
-- Use tools when users request operations that require API calls
-- Provide clear, accurate responses based on the data you receive
+- Be helpful, accurate, and honest in all responses
+- When users request operations that require tool usage, explain what you're doing
+- Use available tools appropriately to help users accomplish their goals
+- Provide clear, well-formatted responses
 - Handle errors gracefully and suggest alternatives when possible
-- Always explain what tools you're using and why
-- Format responses in a user-friendly way"""
+- Ask for clarification when requests are ambiguous"""
+        else:
+            return """You are a helpful AI assistant. I'm here to assist you with a wide variety of tasks including:
+
+- Answering questions and providing information
+- Helping with analysis and problem-solving
+- Creative writing and brainstorming
+- Explaining complex topics
+- Providing recommendations and advice
+
+Please feel free to ask me anything, and I'll do my best to help you!"""
     
     def get_aws_config(self) -> Dict[str, Any]:
         """Get AWS configuration for boto3"""

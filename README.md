@@ -23,9 +23,106 @@ Transform your FastAPI app into an intelligent assistant that can interact with 
 
 ### Installation
 
+> **Note**: This package is currently in development. Install directly from the GitHub repository:
+
 ```bash
-pip install auto-bedrock-chat-fastapi
+# Install latest version from GitHub
+pip install git+https://github.com/gabrielbriones/auto-bedrock-chat-fastapi.git
+
+# Or install a specific version/branch
+pip install git+https://github.com/gabrielbriones/auto-bedrock-chat-fastapi.git@main
 ```
+
+Once officially released, it will be available via:
+```bash
+pip install auto-bedrock-chat-fastapi  # (Coming soon to PyPI)
+```
+
+#### Alternative Installation Methods
+
+**For Development/Contributing:**
+```bash
+# Clone and install in editable mode
+git clone https://github.com/gabrielbriones/auto-bedrock-chat-fastapi.git
+cd auto-bedrock-chat-fastapi
+pip install -e .
+```
+
+**Install with specific dependencies:**
+```bash
+# Install with development dependencies
+pip install "git+https://github.com/gabrielbriones/auto-bedrock-chat-fastapi.git[dev]"
+
+# Install with security dependencies  
+pip install "git+https://github.com/gabrielbriones/auto-bedrock-chat-fastapi.git[security]"
+```
+
+**Requirements:**
+- Python 3.9+
+- FastAPI 0.100+
+- AWS credentials configured
+
+#### Verify Installation
+
+```python
+# Test the installation
+import auto_bedrock_chat_fastapi
+print(f"Successfully installed version: {auto_bedrock_chat_fastapi.__version__}")
+
+# Quick test
+from auto_bedrock_chat_fastapi import add_bedrock_chat
+print("✅ auto-bedrock-chat-fastapi is ready to use!")
+```
+
+#### Quick Test Example
+
+Create a simple test file to verify everything works:
+
+```python
+# test_installation.py
+from fastapi import FastAPI
+from auto_bedrock_chat_fastapi import add_bedrock_chat
+
+app = FastAPI(title="Installation Test")
+
+@app.get("/test")
+async def test_endpoint():
+    """Test endpoint to verify the plugin works"""
+    return {"message": "Hello from FastAPI!", "status": "working"}
+
+# Add AI chat capabilities (requires AWS credentials)
+add_bedrock_chat(
+    app,
+    bedrock_model_id="anthropic.claude-3-5-haiku-20241022-v1:0",  # Fast model for testing
+    aws_region="us-east-1"
+)
+
+if __name__ == "__main__":
+    import uvicorn
+    print("🚀 Starting test server...")
+    print("💬 Chat UI will be available at: http://localhost:8000/bedrock-chat/ui")
+    uvicorn.run(app, host="0.0.0.0", port=8000)
+```
+
+Run with: `python test_installation.py`
+
+#### Installation Troubleshooting
+
+**Common Issues:**
+
+1. **Git not found**: Ensure Git is installed and accessible in your PATH
+2. **Permission errors**: Try installing in a virtual environment:
+   ```bash
+   python -m venv venv
+   source venv/bin/activate  # On Windows: venv\Scripts\activate
+   pip install git+https://github.com/gabrielbriones/auto-bedrock-chat-fastapi.git
+   ```
+3. **Dependency conflicts**: Create a fresh virtual environment
+4. **SSL/Certificate errors**: Try:
+   ```bash
+   pip install --trusted-host github.com git+https://github.com/gabrielbriones/auto-bedrock-chat-fastapi.git
+   ```
+5. **Access denied**: Ensure the repository is public or you have access rights
 
 ### Basic Usage
 
