@@ -18,6 +18,9 @@ Transform your FastAPI app into an intelligent assistant that can interact with 
 - 🔒 **Configurable Security**: Control which endpoints are exposed to AI
 - 📊 **Tool Execution**: AI can call your API endpoints and get real responses
 - 🎯 **Type-Safe**: Full TypeScript-style hints and validation
+- 🧠 **Smart Conversation Management**: Automatic conversation history trimming to prevent context length errors
+- 📄 **Large Message Chunking**: Handles oversized messages (like log files) with intelligent splitting
+- ⚡ **Recursive Tool Calls**: Supports complex multi-step problem-solving workflows
 
 ## 🚀 Quick Start
 
@@ -378,6 +381,91 @@ class WebSocketChatHandler:
         return bedrock_messages
 ```
 
+### 🧠 Conversation Management & Message Chunking
+
+The plugin includes sophisticated conversation management to handle context length limits and large messages automatically.
+
+#### Conversation History Management
+
+Prevents "Input too long" errors from lengthy conversation history:
+
+```python
+# Configure conversation history limits
+add_bedrock_chat(
+    app,
+    max_conversation_messages=20,              # Keep last 20 messages
+    conversation_strategy="sliding_window",    # How to trim history
+    preserve_system_message=True              # Always keep system prompt
+)
+```
+
+**Available Strategies:**
+
+- **`sliding_window`** (default): Preserves system message + most recent messages
+- **`truncate`**: Simple truncation keeping newest messages
+- **`smart_prune`**: Removes tool messages first, prioritizes user/assistant conversation
+
+#### Message Chunking for Large Content
+
+Automatically handles oversized messages (like large tool responses or log files):
+
+```python
+# Configure message chunking
+add_bedrock_chat(
+    app,
+    max_message_size=100000,           # ~100KB limit before chunking
+    chunk_size=80000,                  # ~80KB per chunk
+    chunking_strategy="preserve_context", # Smart boundary detection
+    chunk_overlap=1000,                # Context overlap between chunks
+    enable_message_chunking=True       # Enable/disable chunking
+)
+```
+
+**Chunking Strategies:**
+
+- **`preserve_context`** (default): Breaks on natural boundaries (paragraphs, sentences)
+- **`simple`**: Basic character-based splitting with overlap
+- **`semantic`**: Future NLP-based intelligent splitting
+
+**Real-world Example:**
+
+```python
+# Before: This would fail with "Input too long"
+large_log_response = {"role": "tool", "content": huge_log_file}  # 500KB
+
+# After: Automatically becomes multiple messages
+# [CHUNK 1/7] This message was too large and has been split into chunks...
+# [CHUNK 2/7] ...continued content...
+# [CHUNK 3/7] ...more content...
+```
+
+#### Environment Configuration
+
+```bash
+# Conversation Management
+BEDROCK_MAX_CONVERSATION_MESSAGES=20
+BEDROCK_CONVERSATION_STRATEGY=sliding_window
+BEDROCK_PRESERVE_SYSTEM_MESSAGE=true
+
+# Message Chunking  
+BEDROCK_MAX_MESSAGE_SIZE=100000
+BEDROCK_CHUNK_SIZE=80000
+BEDROCK_CHUNKING_STRATEGY=preserve_context
+BEDROCK_CHUNK_OVERLAP=1000
+BEDROCK_ENABLE_MESSAGE_CHUNKING=true
+
+# Recursive Tool Calls
+BEDROCK_MAX_TOOL_CALL_ROUNDS=10
+```
+
+#### Benefits
+
+✅ **Prevents Context Errors**: No more "Input too long" failures  
+✅ **Handles Large Responses**: Log files, data dumps, large API responses  
+✅ **Maintains Context**: Smart overlap and boundary detection  
+✅ **Automatic Operation**: Works transparently with existing code  
+✅ **Configurable**: Fine-tune limits for your specific use case  
+
 ### Configuration Management
 
 The plugin reads and manages configuration from multiple sources:
@@ -445,11 +533,72 @@ class ChatConfig(BaseSettings):
         description="Maximum tool calls per conversation turn"
     )
     
+    max_tool_call_rounds: int = Field(
+        default=10,
+        env="BEDROCK_MAX_TOOL_CALL_ROUNDS",
+        gt=0,
+        description="Maximum rounds of recursive tool calls"
+    )
+    
     timeout: int = Field(
         default=30,
         env="BEDROCK_TIMEOUT",
         gt=0,
         description="Timeout for API calls in seconds"
+    )
+    
+    # Conversation History Management
+    max_conversation_messages: int = Field(
+        default=20,
+        env="BEDROCK_MAX_CONVERSATION_MESSAGES",
+        gt=0,
+        description="Maximum messages to keep in conversation history"
+    )
+    
+    conversation_strategy: str = Field(
+        default="sliding_window",
+        env="BEDROCK_CONVERSATION_STRATEGY",
+        description="Strategy for handling long conversations: 'sliding_window', 'truncate', 'smart_prune'"
+    )
+    
+    preserve_system_message: bool = Field(
+        default=True,
+        env="BEDROCK_PRESERVE_SYSTEM_MESSAGE",
+        description="Whether to always preserve the system message when trimming history"
+    )
+    
+    # Message Chunking Configuration
+    max_message_size: int = Field(
+        default=100000,
+        env="BEDROCK_MAX_MESSAGE_SIZE",
+        gt=0,
+        description="Maximum characters in a single message before chunking (~100KB)"
+    )
+    
+    chunk_size: int = Field(
+        default=80000,
+        env="BEDROCK_CHUNK_SIZE",
+        gt=0,
+        description="Size of each chunk when splitting large messages (~80KB)"
+    )
+    
+    chunking_strategy: str = Field(
+        default="preserve_context",
+        env="BEDROCK_CHUNKING_STRATEGY",
+        description="Strategy for chunking large messages: 'simple', 'preserve_context', 'semantic'"
+    )
+    
+    chunk_overlap: int = Field(
+        default=1000,
+        env="BEDROCK_CHUNK_OVERLAP",
+        ge=0,
+        description="Number of characters to overlap between chunks for context continuity"
+    )
+    
+    enable_message_chunking: bool = Field(
+        default=True,
+        env="BEDROCK_ENABLE_MESSAGE_CHUNKING",
+        description="Whether to enable automatic chunking of large messages"
     )
     
     # WebSocket Configuration

@@ -1,4 +1,16 @@
-"""Example FastAPI application demonstrating auto-bedrock-chat-fastapi"""
+"""Example FastAPI application demonstrating auto-bedrock-chat-fastapi
+
+This example shows two ways to use the plugin:
+
+1. Adding to existing FastAPI app (current approach):
+   from auto_bedrock_chat_fastapi import add_bedrock_chat
+   app = FastAPI()
+   add_bedrock_chat(app)
+
+2. Creating new app with modern lifespan (recommended for new projects):
+   from auto_bedrock_chat_fastapi import create_fastapi_with_bedrock_chat
+   app, plugin = create_fastapi_with_bedrock_chat()
+"""
 
 from fastapi import FastAPI, HTTPException, Depends
 from pydantic import BaseModel, Field
@@ -12,12 +24,20 @@ import string
 from auto_bedrock_chat_fastapi import add_bedrock_chat
 from auto_bedrock_chat_fastapi.config import load_config
 
-# Create FastAPI app
+# Create FastAPI app (existing app approach)
 app = FastAPI(
     title="Example E-commerce API",
     description="A sample e-commerce API with AI chat assistance",
     version="1.0.0"
 )
+
+# Alternative: Create app with modern lifespan (uncomment to use)
+# from auto_bedrock_chat_fastapi import create_fastapi_with_bedrock_chat
+# app, plugin = create_fastapi_with_bedrock_chat(
+#     title="Example E-commerce API",
+#     description="A sample e-commerce API with AI chat assistance",
+#     version="1.0.0"
+# )
 
 # Mock database
 products_db: Dict[int, Dict] = {

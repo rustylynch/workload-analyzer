@@ -7,7 +7,7 @@ using Amazon Bedrock models with real-time WebSocket chat and automatic tool gen
 __version__ = "1.0.0"
 
 # Main exports
-from .plugin import add_bedrock_chat, BedrockChatPlugin
+from .plugin import add_bedrock_chat, BedrockChatPlugin, create_fastapi_with_bedrock_chat
 from .config import ChatConfig, load_config, validate_config
 from .exceptions import (
     BedrockChatError,
@@ -28,7 +28,8 @@ from .websocket_handler import WebSocketChatHandler
 __all__ = [
     # Main plugin
     "add_bedrock_chat",
-    "BedrockChatPlugin",
+    "BedrockChatPlugin", 
+    "create_fastapi_with_bedrock_chat",
     
     # Configuration
     "ChatConfig", 

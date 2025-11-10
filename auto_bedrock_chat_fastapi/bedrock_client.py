@@ -96,6 +96,18 @@ class BedrockClient:
             # Rate limiting
             await self._handle_rate_limiting()
             
+            # Manage conversation history to prevent context length issues
+            original_count = len(messages)
+            messages = self._manage_conversation_history(messages)
+            if len(messages) < original_count:
+                logger.info(f"Conversation history trimmed from {original_count} to {len(messages)} messages")
+            
+            # Check and chunk large messages to prevent individual message size issues
+            original_message_count = len(messages)
+            messages = self._check_and_chunk_messages(messages)
+            if len(messages) > original_message_count:
+                logger.info(f"Large messages chunked: {original_message_count} -> {len(messages)} messages")
+            
             # Prepare the request based on model family
             # logger.debug(f"Sending messages to model {model_id}: {messages}")
             request_body = self._prepare_request_body(
@@ -395,8 +407,21 @@ class BedrockClient:
                 # Safely extract error code, handling None response
                 response = getattr(e, 'response', None)
                 error_code = ''
+                error_message = str(e)
                 if response and isinstance(response, dict):
                     error_code = response.get('Error', {}).get('Code', '')
+                
+                # Check for context length issues
+                if error_code == 'ValidationException' and 'Input is too long' in error_message:
+                    # This is a context length issue, enhance the error message
+                    enhanced_message = (
+                        f"Input is too long for the model's context window. "
+                        f"Current conversation strategy: {self.config.conversation_strategy}, "
+                        f"max messages: {self.config.max_conversation_messages}. "
+                        f"Consider reducing max_conversation_messages or changing conversation_strategy. "
+                        f"Original error: {error_message}"
+                    )
+                    last_exception = BedrockClientError(enhanced_message)
                 
                 # Don't retry on certain errors
                 if error_code in ['ValidationException', 'AccessDeniedException']:
@@ -590,6 +615,254 @@ class BedrockClient:
             "tool_calls": response.get("tool_calls", []),
             "metadata": response.get("metadata", {})
         }
+    
+    def _manage_conversation_history(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        Manage conversation history to prevent context length issues
+        
+        Args:
+            messages: Original conversation messages
+            
+        Returns:
+            Trimmed messages that fit within context limits
+        """
+        if len(messages) <= self.config.max_conversation_messages:
+            return messages
+        
+        logger.info(f"Conversation history has {len(messages)} messages, trimming to {self.config.max_conversation_messages} using {self.config.conversation_strategy} strategy")
+        
+        if self.config.conversation_strategy == "truncate":
+            return self._truncate_messages(messages)
+        elif self.config.conversation_strategy == "sliding_window":
+            return self._sliding_window_messages(messages)
+        elif self.config.conversation_strategy == "smart_prune":
+            return self._smart_prune_messages(messages)
+        else:
+            # Default to sliding window
+            return self._sliding_window_messages(messages)
+    
+    def _truncate_messages(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Simple truncation - keep the most recent messages"""
+        if self.config.preserve_system_message and messages and messages[0].get("role") == "system":
+            # Keep system message + most recent messages
+            system_msg = [messages[0]]
+            recent_messages = messages[-(self.config.max_conversation_messages - 1):]
+            return system_msg + recent_messages
+        else:
+            return messages[-self.config.max_conversation_messages:]
+    
+    def _sliding_window_messages(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Sliding window - preserve system message and recent context"""
+        result = []
+        
+        # Always preserve system message if present and configured
+        if self.config.preserve_system_message and messages and messages[0].get("role") == "system":
+            result.append(messages[0])
+            remaining_messages = messages[1:]
+            max_remaining = self.config.max_conversation_messages - 1
+        else:
+            remaining_messages = messages
+            max_remaining = self.config.max_conversation_messages
+        
+        # Keep the most recent messages
+        if len(remaining_messages) > max_remaining:
+            result.extend(remaining_messages[-max_remaining:])
+        else:
+            result.extend(remaining_messages)
+        
+        return result
+    
+    def _smart_prune_messages(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Smart pruning - remove tool messages first, then older messages"""
+        result = []
+        
+        # Always preserve system message if present and configured
+        if self.config.preserve_system_message and messages and messages[0].get("role") == "system":
+            result.append(messages[0])
+            remaining_messages = messages[1:]
+            max_remaining = self.config.max_conversation_messages - 1
+        else:
+            remaining_messages = messages
+            max_remaining = self.config.max_conversation_messages
+        
+        if len(remaining_messages) <= max_remaining:
+            result.extend(remaining_messages)
+            return result
+        
+        # First pass: filter out tool messages if we have too many
+        non_tool_messages = []
+        for msg in remaining_messages:
+            role = msg.get("role", "")
+            if role not in ["tool", "function"] and "tool_call" not in msg:
+                non_tool_messages.append(msg)
+        
+        # If removing tool messages is enough, use that
+        if len(non_tool_messages) <= max_remaining:
+            result.extend(non_tool_messages)
+            return result
+        
+        # Otherwise, take the most recent non-tool messages
+        result.extend(non_tool_messages[-max_remaining:])
+        return result
+    
+    def _check_and_chunk_messages(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        Check for large messages and chunk them if necessary
+        
+        Args:
+            messages: List of conversation messages
+            
+        Returns:
+            List of messages with large messages chunked if needed
+        """
+        if not self.config.enable_message_chunking:
+            return messages
+        
+        result = []
+        
+        for msg in messages:
+            content = msg.get("content", "")
+            if isinstance(content, str) and len(content) > self.config.max_message_size:
+                logger.info(f"Message size ({len(content)} chars) exceeds max_message_size ({self.config.max_message_size}), chunking...")
+                chunked_messages = self._chunk_large_message(msg)
+                result.extend(chunked_messages)
+            else:
+                result.append(msg)
+        
+        return result
+    
+    def _chunk_large_message(self, message: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """
+        Split a large message into smaller chunks
+        
+        Args:
+            message: The message to chunk
+            
+        Returns:
+            List of chunked messages with proper metadata
+        """
+        content = message.get("content", "")
+        if not isinstance(content, str):
+            return [message]  # Cannot chunk non-string content
+        
+        role = message.get("role", "user")
+        
+        # Choose chunking strategy
+        if self.config.chunking_strategy == "simple":
+            chunks = self._simple_chunk(content)
+        elif self.config.chunking_strategy == "preserve_context":
+            chunks = self._context_aware_chunk(content)
+        elif self.config.chunking_strategy == "semantic":
+            chunks = self._semantic_chunk(content)
+        else:
+            chunks = self._context_aware_chunk(content)  # Default fallback
+        
+        # Create chunked messages with metadata
+        chunked_messages = []
+        total_chunks = len(chunks)
+        
+        for i, chunk in enumerate(chunks):
+            chunk_number = i + 1
+            
+            # Create chunk metadata
+            chunk_metadata = {
+                "is_chunk": True,
+                "chunk_number": chunk_number,
+                "total_chunks": total_chunks,
+                "original_size": len(content),
+                "chunk_size": len(chunk)
+            }
+            
+            # Add chunk context information to the content
+            if total_chunks > 1:
+                chunk_prefix = f"[CHUNK {chunk_number}/{total_chunks}] "
+                if chunk_number == 1:
+                    chunk_prefix += "This message was too large and has been split into chunks. "
+                chunk_content = chunk_prefix + chunk
+            else:
+                chunk_content = chunk
+            
+            # Create new message with chunk
+            chunked_msg = message.copy()
+            chunked_msg["content"] = chunk_content
+            
+            # Merge metadata properly (chunk metadata takes precedence)
+            original_metadata = chunked_msg.get("metadata", {})
+            chunked_msg["metadata"] = {**original_metadata, **chunk_metadata}
+            
+            chunked_messages.append(chunked_msg)
+        
+        return chunked_messages
+    
+    def _simple_chunk(self, content: str) -> List[str]:
+        """Simple character-based chunking"""
+        chunks = []
+        chunk_size = self.config.chunk_size
+        overlap = self.config.chunk_overlap
+        
+        i = 0
+        while i < len(content):
+            # Determine chunk end position
+            chunk_end = min(i + chunk_size, len(content))
+            chunk = content[i:chunk_end]
+            chunks.append(chunk)
+            
+            # Move to next chunk with overlap
+            if chunk_end >= len(content):
+                break
+            i = chunk_end - overlap
+            
+        return chunks
+    
+    def _context_aware_chunk(self, content: str) -> List[str]:
+        """Context-aware chunking that tries to break on natural boundaries"""
+        chunks = []
+        chunk_size = self.config.chunk_size
+        overlap = self.config.chunk_overlap
+        
+        # Natural break points in order of preference
+        break_patterns = ['\n\n', '\n', '. ', ', ', ' ']
+        
+        i = 0
+        while i < len(content):
+            # Find the ideal chunk end
+            ideal_end = min(i + chunk_size, len(content))
+            
+            if ideal_end >= len(content):
+                # Last chunk, take everything remaining
+                chunks.append(content[i:])
+                break
+            
+            # Look for a good break point before the ideal end
+            best_break = ideal_end
+            for pattern in break_patterns:
+                # Search backwards from ideal end for pattern
+                search_start = max(i + chunk_size // 2, ideal_end - chunk_size // 4)
+                last_occurrence = content.rfind(pattern, search_start, ideal_end)
+                if last_occurrence > i:
+                    best_break = last_occurrence + len(pattern)
+                    break
+            
+            # Extract chunk
+            chunk = content[i:best_break].strip()
+            if chunk:  # Only add non-empty chunks
+                chunks.append(chunk)
+            
+            # Move to next position with overlap
+            i = max(best_break - overlap, i + 1)  # Ensure progress
+        
+        return chunks
+    
+    def _semantic_chunk(self, content: str) -> List[str]:
+        """
+        Semantic chunking that tries to preserve logical units
+        Currently falls back to context-aware chunking, but could be enhanced
+        with NLP libraries for more intelligent splitting
+        """
+        # For now, use context-aware chunking
+        # In the future, this could use libraries like spacy or nltk
+        # to split on sentence or paragraph boundaries more intelligently
+        return self._context_aware_chunk(content)
     
     async def _execute_tool_calls(
         self, tool_calls: List[Dict[str, Any]], tools_desc: Optional[Dict]

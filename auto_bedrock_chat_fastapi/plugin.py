@@ -2,6 +2,8 @@
 
 import logging
 from typing import Optional, Callable, Dict, Any
+import atexit
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, WebSocket, Request, Depends
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -245,16 +247,87 @@ class BedrockChatPlugin:
             logger.info(f"  UI: {self.config.ui_endpoint}")
     
     def _setup_shutdown(self):
-        """Setup shutdown handler"""
+        """Setup shutdown handler using modern lifespan approach"""
         
-        @self.app.on_event("shutdown")
-        async def shutdown_bedrock_chat():
-            """Cleanup on app shutdown"""
+        # Store reference to websocket_handler for cleanup
+        if not hasattr(self.app.state, 'bedrock_cleanup_handlers'):
+            self.app.state.bedrock_cleanup_handlers = []
+        
+        # Add our shutdown handler to the app state
+        self.app.state.bedrock_cleanup_handlers.append(self.shutdown)
+        
+        # Register atexit handler as a fallback
+        atexit.register(self._sync_shutdown)
+        
+        # Try to set up lifespan handler if the app supports it and doesn't have one
+        try:
+            if not hasattr(self.app.router, 'lifespan_context') or not self.app.router.lifespan_context:
+                @asynccontextmanager
+                async def bedrock_lifespan(app: FastAPI):
+                    """Lifespan context manager for Bedrock chat plugin"""
+                    # Startup phase
+                    yield
+                    # Shutdown phase
+                    await self.shutdown()
+                
+                self.app.router.lifespan_context = bedrock_lifespan
+                logger.debug("Registered lifespan handler for Bedrock chat plugin")
+        except Exception as e:
+            logger.debug(f"Could not register lifespan handler, using fallback: {e}")
+    
+    async def shutdown(self):
+        """Shutdown the Bedrock chat plugin"""
+        try:
+            await self.websocket_handler.shutdown()
+            logger.info("Bedrock chat plugin shutdown complete")
+        except Exception as e:
+            logger.error(f"Error during shutdown: {str(e)}")
+    
+    def _sync_shutdown(self):
+        """Synchronous shutdown handler for atexit"""
+        try:
+            # Try to get the current event loop
             try:
-                await self.websocket_handler.shutdown()
-                logger.info("Bedrock chat plugin shutdown complete")
-            except Exception as e:
-                logger.error(f"Error during shutdown: {str(e)}")
+                loop = asyncio.get_running_loop()
+                # If we get here, there's a running loop - schedule the task
+                asyncio.create_task(self.shutdown())
+                return
+            except RuntimeError:
+                # No running loop, continue to try creating one
+                pass
+            
+            # Try to get or create an event loop
+            try:
+                loop = asyncio.get_event_loop()
+                if loop.is_closed():
+                    # Loop is closed, create a new one
+                    asyncio.set_event_loop(asyncio.new_event_loop())
+                    loop = asyncio.get_event_loop()
+                
+                # Run the shutdown coroutine
+                loop.run_until_complete(self.shutdown())
+            except RuntimeError:
+                # If all else fails, create and run with a new loop
+                try:
+                    asyncio.run(self.shutdown())
+                except RuntimeError:
+                    # In test environments or certain contexts, async shutdown may not be possible
+                    # Just do synchronous cleanup
+                    self._sync_cleanup()
+        except Exception as e:
+            # Suppress errors during shutdown to avoid noise in logs
+            # Only log in debug mode
+            logger.debug(f"Error during sync shutdown: {str(e)}")
+    
+    def _sync_cleanup(self):
+        """Synchronous cleanup without async operations"""
+        try:
+            # Just log that we attempted cleanup - websocket handler cleanup
+            # will be handled by other mechanisms or when the process exits
+            logger.debug("Performing synchronous cleanup for Bedrock chat plugin")
+        except Exception:
+            # Silently ignore any errors during sync cleanup
+            pass
     
     def _get_default_ui_html(self) -> str:
         """Get default chat UI HTML"""
@@ -884,3 +957,57 @@ def add_bedrock_chat(
     except Exception as e:
         logger.error(f"Failed to add Bedrock chat to FastAPI app: {str(e)}")
         raise BedrockChatError(f"Plugin initialization failed: {str(e)}")
+
+
+def create_fastapi_with_bedrock_chat(**kwargs) -> tuple[FastAPI, BedrockChatPlugin]:
+    """
+    Create a new FastAPI app with Bedrock chat plugin using modern lifespan handlers.
+    
+    This is the recommended way to create a new FastAPI app with Bedrock chat support.
+    It properly handles startup and shutdown using the modern lifespan approach.
+    
+    Args:
+        **kwargs: Configuration overrides for the ChatConfig
+        
+    Returns:
+        Tuple of (FastAPI app, BedrockChatPlugin instance)
+        
+    Example:
+        ```python
+        from auto_bedrock_chat_fastapi import create_fastapi_with_bedrock_chat
+        
+        app, plugin = create_fastapi_with_bedrock_chat(
+            model_id="anthropic.claude-3-5-sonnet-20241022-v2:0",
+            enable_ui=True
+        )
+        
+        # Add your own routes
+        @app.get("/")
+        async def root():
+            return {"message": "Hello World"}
+        
+        if __name__ == "__main__":
+            import uvicorn
+            uvicorn.run(app, host="0.0.0.0", port=8000)
+        ```
+    """
+    
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        """Lifespan context manager with Bedrock chat cleanup"""
+        # Startup
+        yield
+        # Shutdown - cleanup Bedrock chat resources
+        if hasattr(app.state, 'bedrock_plugin'):
+            await app.state.bedrock_plugin.shutdown()
+    
+    # Create FastAPI app with lifespan
+    app = FastAPI(lifespan=lifespan)
+    
+    # Add Bedrock chat plugin
+    plugin = add_bedrock_chat(app, **kwargs)
+    
+    # Store plugin reference for cleanup
+    app.state.bedrock_plugin = plugin
+    
+    return app, plugin

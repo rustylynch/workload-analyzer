@@ -96,6 +96,60 @@ class ChatConfig(BaseSettings):
         description="Maximum rounds of recursive tool calls"
     )
     
+    # Conversation History Management
+    max_conversation_messages: int = Field(
+        default=20,
+        alias="BEDROCK_MAX_CONVERSATION_MESSAGES",
+        gt=0,
+        description="Maximum messages to keep in conversation history"
+    )
+    
+    conversation_strategy: str = Field(
+        default="sliding_window",
+        alias="BEDROCK_CONVERSATION_STRATEGY",
+        description="Strategy for handling long conversations: 'sliding_window', 'truncate', 'smart_prune'"
+    )
+    
+    preserve_system_message: bool = Field(
+        default=True,
+        alias="BEDROCK_PRESERVE_SYSTEM_MESSAGE",
+        description="Whether to always preserve the system message when trimming history"
+    )
+    
+    # Message Chunking Configuration
+    max_message_size: int = Field(
+        default=100000,
+        alias="BEDROCK_MAX_MESSAGE_SIZE",
+        gt=0,
+        description="Maximum characters in a single message before chunking (default ~100KB)"
+    )
+    
+    chunk_size: int = Field(
+        default=80000,
+        alias="BEDROCK_CHUNK_SIZE",
+        gt=0,
+        description="Size of each chunk when splitting large messages (default ~80KB)"
+    )
+    
+    chunking_strategy: str = Field(
+        default="preserve_context",
+        alias="BEDROCK_CHUNKING_STRATEGY",
+        description="Strategy for chunking large messages: 'simple', 'preserve_context', 'semantic'"
+    )
+    
+    chunk_overlap: int = Field(
+        default=1000,
+        alias="BEDROCK_CHUNK_OVERLAP",
+        ge=0,
+        description="Number of characters to overlap between chunks for context continuity"
+    )
+    
+    enable_message_chunking: bool = Field(
+        default=True,
+        alias="BEDROCK_ENABLE_MESSAGE_CHUNKING",
+        description="Whether to enable automatic chunking of large messages"
+    )
+    
     timeout: int = Field(
         default=30,
         alias="BEDROCK_TIMEOUT",
@@ -298,19 +352,32 @@ class ChatConfig(BaseSettings):
         if "/" not in v:
             raise ValueError("Rate limit must be in format 'number/period' (e.g., '10/minute')")
         
-        parts = v.split("/")
-        if len(parts) != 2:
-            raise ValueError("Rate limit must be in format 'number/period'")
-        
-        try:
-            int(parts[0])
-        except ValueError:
-            raise ValueError("Rate limit number must be an integer")
-        
-        valid_periods = ["second", "minute", "hour", "day"]
-        if parts[1] not in valid_periods:
-            raise ValueError(f"Rate limit period must be one of: {valid_periods}")
-        
+        return v
+    
+    @field_validator('conversation_strategy')
+    @classmethod
+    def validate_conversation_strategy(cls, v):
+        """Validate conversation strategy"""
+        valid_strategies = {'sliding_window', 'truncate', 'smart_prune'}
+        if v not in valid_strategies:
+            raise ValueError(f"conversation_strategy must be one of: {', '.join(valid_strategies)}")
+        return v
+    
+    @field_validator('chunking_strategy')
+    @classmethod
+    def validate_chunking_strategy(cls, v):
+        """Validate chunking strategy"""
+        valid_strategies = {'simple', 'preserve_context', 'semantic'}
+        if v not in valid_strategies:
+            raise ValueError(f"chunking_strategy must be one of: {', '.join(valid_strategies)}")
+        return v
+    
+    @field_validator('chunk_size', 'max_message_size')
+    @classmethod
+    def validate_chunk_sizes(cls, v, info):
+        """Validate chunk and message sizes"""
+        if v <= 0:
+            raise ValueError(f"{info.field_name} must be positive")
         return v
     
     def get_system_prompt(self) -> str:
@@ -402,6 +469,45 @@ def load_config(
                 if not any(pattern in model_val for pattern in valid_patterns):
                     if not model_val.startswith(("test-", "custom-")):
                         raise ConfigurationError(f"Invalid model ID: {model_val}")
+            
+            # Validate conversation management fields
+            if 'conversation_strategy' in overrides:
+                strategy_val = overrides['conversation_strategy']
+                valid_strategies = {'sliding_window', 'truncate', 'smart_prune'}
+                if strategy_val not in valid_strategies:
+                    raise ConfigurationError(f"conversation_strategy must be one of: {', '.join(valid_strategies)}")
+            
+            if 'max_conversation_messages' in overrides:
+                max_msg_val = overrides['max_conversation_messages']
+                if not isinstance(max_msg_val, int) or max_msg_val <= 0:
+                    raise ConfigurationError("max_conversation_messages must be a positive integer")
+            
+            # Validate chunking fields
+            if 'chunking_strategy' in overrides:
+                strategy_val = overrides['chunking_strategy']
+                valid_strategies = {'simple', 'preserve_context', 'semantic'}
+                if strategy_val not in valid_strategies:
+                    raise ConfigurationError(f"chunking_strategy must be one of: {', '.join(valid_strategies)}")
+            
+            if 'max_message_size' in overrides:
+                size_val = overrides['max_message_size']
+                if not isinstance(size_val, int) or size_val <= 0:
+                    raise ConfigurationError("max_message_size must be a positive integer")
+            
+            if 'chunk_size' in overrides:
+                chunk_val = overrides['chunk_size']
+                if not isinstance(chunk_val, int) or chunk_val <= 0:
+                    raise ConfigurationError("chunk_size must be a positive integer")
+            
+            if 'chunk_overlap' in overrides:
+                overlap_val = overrides['chunk_overlap']
+                if not isinstance(overlap_val, int) or overlap_val < 0:
+                    raise ConfigurationError("chunk_overlap must be a non-negative integer")
+            
+            # Validate chunk_size vs max_message_size relationship
+            if 'chunk_size' in overrides and 'max_message_size' in overrides:
+                if overrides['chunk_size'] >= overrides['max_message_size']:
+                    raise ConfigurationError("chunk_size must be smaller than max_message_size")
             
             # Create base config from .env
             config = ChatConfig()
